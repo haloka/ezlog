@@ -316,19 +316,113 @@ Output:
 
 File rotation is not built in by design — pass any `io.Writer`. With [lumberjack](https://github.com/natefinch/lumberjack):
 
-```go
-import "gopkg.in/natefinch/lumberjack.v2"
+```
+go get gopkg.in/natefinch/lumberjack.v2
+```
 
-log, _ := ezlog.NewLogger(ezlog.Options{
-    Format: ezlog.FormatJSON,
-    Output: &lumberjack.Logger{
+**Write JSON logs to a rotating file:**
+
+```go
+package main
+
+import (
+    "github.com/haloka/ezlog"
+    "gopkg.in/natefinch/lumberjack.v2"
+)
+
+func main() {
+    log, _ := ezlog.NewLogger(ezlog.Options{
+        Format: ezlog.FormatJSON,
+        Output: &lumberjack.Logger{
+            Filename:   "/var/log/myapp/app.log",
+            MaxSize:    100, // megabytes before rotation
+            MaxAge:     30,  // days to retain old logs
+            MaxBackups: 5,   // maximum number of old log files to keep
+            Compress:   true, // gzip rotated files
+        },
+    })
+
+    log.Info("server started", "addr", ":8080")
+    log.Error("request failed", ezlog.Err(ezlog.New("timeout").WithCode("ERR_TIMEOUT")))
+}
+```
+
+**Write to both a rotating file and stderr simultaneously:**
+
+```go
+package main
+
+import (
+    "io"
+    "os"
+
+    "github.com/haloka/ezlog"
+    "gopkg.in/natefinch/lumberjack.v2"
+)
+
+func main() {
+    rotator := &lumberjack.Logger{
         Filename:   "/var/log/myapp/app.log",
-        MaxSize:    100, // MB
-        MaxAge:     30,  // days
+        MaxSize:    100,
+        MaxAge:     30,
         MaxBackups: 5,
         Compress:   true,
-    },
-})
+    }
+
+    // Fan out to file (JSON) and terminal (text) at the same time.
+    // Both writers receive the same bytes, so use JSON for the shared output.
+    log, _ := ezlog.NewLogger(ezlog.Options{
+        Format: ezlog.FormatJSON,
+        Output: io.MultiWriter(os.Stderr, rotator),
+    })
+
+    log.Info("ready", "pid", os.Getpid())
+}
+```
+
+**Rotate on demand (e.g. on SIGHUP):**
+
+```go
+package main
+
+import (
+    "os"
+    "os/signal"
+    "syscall"
+
+    "github.com/haloka/ezlog"
+    "gopkg.in/natefinch/lumberjack.v2"
+)
+
+func main() {
+    rotator := &lumberjack.Logger{
+        Filename:   "/var/log/myapp/app.log",
+        MaxSize:    100,
+        MaxBackups: 5,
+        Compress:   true,
+    }
+
+    log, _ := ezlog.NewLogger(ezlog.Options{
+        Format: ezlog.FormatJSON,
+        Output: rotator,
+    })
+
+    // Rotate the log file when SIGHUP is received.
+    go func() {
+        ch := make(chan os.Signal, 1)
+        signal.Notify(ch, syscall.SIGHUP)
+        for range ch {
+            if err := rotator.Rotate(); err != nil {
+                log.Error("log rotation failed", ezlog.Err(err))
+            } else {
+                log.Info("log rotated")
+            }
+        }
+    }()
+
+    log.Info("server started")
+    select {} // keep running
+}
 ```
 
 ### Global default logger
